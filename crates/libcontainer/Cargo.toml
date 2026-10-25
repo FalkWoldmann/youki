@@ -24,7 +24,7 @@ caps = { workspace = true }
 chrono = { workspace = true, features = ["clock", "serde"] }
 fastrand = { workspace = true }
 libc = { workspace = true }
-nix = { workspace = true, features = ["socket", "sched", "mount", "mman", "resource", "dir", "term", "hostname", "personality"] }
+nix = { workspace = true, features = ["socket", "sched", "mount", "mman", "resource", "dir", "term", "hostname", "personality", "user"] }
 oci-spec = { workspace = true }
 procfs = { workspace = true }
 prctl = { workspace = true }

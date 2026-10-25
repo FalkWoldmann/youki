@@ -1,6 +1,6 @@
 //! Implements Command trait for Linux systems
 use std::any::Any;
-use std::ffi::{CStr, CString, OsStr};
+use std::ffi::{CString, OsStr};
 use std::os::fd::{BorrowedFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
@@ -8,7 +8,6 @@ use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::{mem, ptr};
 
 use caps::{CapSet, CapsHashSet};
 use libc::{c_char, setdomainname, uid_t};
@@ -18,7 +17,7 @@ use nix::fcntl::{OFlag, open};
 use nix::mount::{MntFlags, MsFlags, mount, umount2};
 use nix::sched::{CloneFlags, unshare};
 use nix::sys::stat::{Mode, SFlag, mknod};
-use nix::unistd::{Gid, Uid, chdir, chown, chroot, fchdir, pivot_root, sethostname};
+use nix::unistd::{Gid, Uid, User, chdir, chown, chroot, fchdir, pivot_root, sethostname};
 use oci_spec::runtime::PosixRlimit;
 use pathrs::flags::OpenFlags;
 use pathrs::procfs::{ProcfsBase, ProcfsHandle};
@@ -311,19 +310,6 @@ impl MountAttr {
 pub struct LinuxSyscall;
 
 impl LinuxSyscall {
-    unsafe fn from_raw_buf<'a, T>(p: *const c_char) -> T
-    where
-        T: From<&'a OsStr>,
-    {
-        unsafe { T::from(OsStr::from_bytes(CStr::from_ptr(p).to_bytes())) }
-    }
-
-    /// Reads data from the `c_passwd` and returns it as a `User`.
-    unsafe fn passwd_to_user(passwd: libc::passwd) -> Arc<OsStr> {
-        let name: Arc<OsStr> = unsafe { Self::from_raw_buf(passwd.pw_name) };
-        name
-    }
-
     fn emulate_close_range(preserve_fds: i32) -> Result<()> {
         let open_fds = Self::get_open_fds()?;
         // Include stdin, stdout, and stderr for fd 0, 1, and 2 respectively.
@@ -593,38 +579,11 @@ impl Syscall for LinuxSyscall {
         Ok(())
     }
 
-    // taken from https://crates.io/crates/users
     fn get_pwuid(&self, uid: uid_t) -> Option<Arc<OsStr>> {
-        let mut passwd = unsafe { mem::zeroed::<libc::passwd>() };
-        let mut buf = vec![0; 2048];
-        let mut result = ptr::null_mut::<libc::passwd>();
-
-        loop {
-            let r = unsafe {
-                libc::getpwuid_r(uid, &mut passwd, buf.as_mut_ptr(), buf.len(), &mut result)
-            };
-
-            if r != libc::ERANGE {
-                break;
-            }
-
-            let newsize = buf.len().checked_mul(2)?;
-            buf.resize(newsize, 0);
-        }
-
-        if result.is_null() {
-            // There is no such user, or an error has occurred.
-            // errno gets set if there's an error.
-            return None;
-        }
-
-        if result != &mut passwd {
-            // The result of getpwuid_r should be its input passwd.
-            return None;
-        }
-
-        let user = unsafe { Self::passwd_to_user(result.read()) };
-        Some(user)
+        User::from_uid(Uid::from_raw(uid))
+            .ok()
+            .flatten()
+            .map(|user| Arc::from(OsStr::new(&user.name)))
     }
 
     fn chroot(&self, path: &Path) -> Result<()> {
@@ -1025,6 +984,7 @@ mod tests {
     // cleanup_file_descriptors test is especially evil when running with other
     // tests because it would ran around close down different fds.
 
+    use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::prelude::AsRawFd;
     use std::str::FromStr;
@@ -1094,6 +1054,13 @@ mod tests {
 
         unistd::close(fd)?;
         Ok(())
+    }
+
+    #[test]
+    fn test_get_pwuid() {
+        let syscall = LinuxSyscall {};
+        assert_eq!(syscall.get_pwuid(0).as_deref(), Some(OsStr::new("root")));
+        assert_eq!(syscall.get_pwuid(u32::MAX - 1), None);
     }
 
     #[test]
